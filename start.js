@@ -19,13 +19,14 @@ const path = require('path')
 const readline = require('readline')
 const NodeCache = require('node-cache')
 const os = require('os')
+const axios = require('axios')
 const caseHandler = require('./case')
 const { PluginManager } = require('./case')
 
 // ==================== CONFIGURATION ====================
 const CONFIG = {
     sessionName: 'applendii-session',
-    prefix: ['.', '#', '!', '/'],
+    prefix: ['.', '/'],
     ownerNumber: ['6285800650661'], // GANTI dengan nomor owner
     botName: 'Apple-NDIIBot',
     version: '1.0.0',
@@ -49,7 +50,6 @@ class DatabaseManager {
     }
 
     ensureDatabase() {
-        // Buat folder db jika belum ada
         if (!fs.existsSync(this.dbPath)) {
             fs.mkdirSync(this.dbPath, { recursive: true })
             console.log('📁 Created database directory')
@@ -129,7 +129,6 @@ class DatabaseManager {
         return `${cleanNumber}@s.whatsapp.net`
     }
 
-    // ==================== USER MANAGEMENT ====================
     getUser(jid) {
         const users = this.load('users.json')
         const cleanJid = this.cleanJid(jid)
@@ -212,13 +211,11 @@ class DatabaseManager {
         }
     }
 
-    // ==================== PREMIUM MANAGEMENT ====================
     setPremium(jid, status = true) {
         const cleanJid = this.cleanJid(jid)
         const user = this.getUser(cleanJid)
         
         if (!user) {
-            // Buat user baru jika belum ada
             this.addUserIfNotExists(cleanJid)
         }
         
@@ -234,7 +231,6 @@ class DatabaseManager {
         return Object.values(users).filter(user => user.premium === true)
     }
 
-    // ==================== PARTNER MANAGEMENT ====================
     setPartner(jid, status = true) {
         const cleanJid = this.cleanJid(jid)
         const partners = this.load('partner.json')
@@ -254,8 +250,6 @@ class DatabaseManager {
         }
         
         this.save('partner.json', partners)
-        
-        // Update user data
         this.updateUser(cleanJid, { partner: status })
         
         return partners[cleanJid] || null
@@ -266,7 +260,6 @@ class DatabaseManager {
         return Object.values(partners).filter(partner => partner.status === 'active')
     }
 
-    // ==================== REMINDER MANAGEMENT ====================
     addReminder(reminderData) {
         const reminders = this.load('reminder.json')
         const newReminder = {
@@ -302,7 +295,6 @@ class DatabaseManager {
             reminder.status = status
             reminder.executed_at = new Date().toISOString()
             
-            // Handle repeat reminders
             if (reminder.repeat && status === 'executed') {
                 const executeAt = new Date(reminder.executeAt)
                 
@@ -344,7 +336,6 @@ class DatabaseManager {
         return reminders.filter(r => r.user === cleanJid && r.status === 'pending')
     }
 
-    // ==================== DATABASE STATS ====================
     getDatabaseStats() {
         const users = this.load('users.json')
         const partners = this.load('partner.json')
@@ -378,7 +369,6 @@ class DatabaseManager {
         return size
     }
 
-    // ==================== OWNER MANAGEMENT ====================
     isOwner(jid) {
         const ownerData = this.load('owner.json')
         const cleanJid = this.cleanJid(jid)
@@ -413,7 +403,6 @@ class DatabaseManager {
         return false
     }
 
-    // ==================== CACHE MANAGEMENT ====================
     clearCache() {
         this.cache.flushAll()
         return true
@@ -469,7 +458,6 @@ class WhatsAppBot {
         
         this.store.readFromFile(path.join(__dirname, 'store.json'))
         
-        // Save store every 10 seconds
         setInterval(() => {
             this.store.writeToFile(path.join(__dirname, 'store.json'))
         }, 10000)
@@ -495,18 +483,14 @@ class WhatsAppBot {
                 generateHighQualityLinkPreview: true,
                 syncFullHistory: false,
                 getMessage: async (key) => {
-                    // Implement message retrieval if needed
                     return { conversation: '' }
                 }
             })
 
-            // Bind store
             this.store.bind(this.sock.ev)
 
-            // Handle credentials update
             this.sock.ev.on('creds.update', saveCreds)
 
-            // Handle connection updates
             this.sock.ev.on('connection.update', async (update) => {
                 const { connection, lastDisconnect, qr } = update
 
@@ -519,10 +503,7 @@ class WhatsAppBot {
                     this.reconnectAttempts = 0
                     console.log('✅ Connected to WhatsApp')
                     
-                    // Update bot number in owner database
                     await this.updateBotInfo()
-                    
-                    // Send startup message to owner
                     await this.sendStartupMessage()
                 }
 
@@ -536,17 +517,14 @@ class WhatsAppBot {
                 }
             })
 
-            // Handle message updates
             this.sock.ev.on('messages.upsert', async (m) => {
                 await this.handleMessages(m)
             })
 
-            // Handle group participants update
             this.sock.ev.on('group-participants.update', async (update) => {
                 await this.handleGroupUpdate(update)
             })
 
-            // Handle pairing if not registered
             if (!this.sock.authState.creds.registered) {
                 await this.requestPairingCode()
             }
@@ -659,7 +637,6 @@ class WhatsAppBot {
             
             console.log(`📱 Bot Number: ${cleanBotJid.split('@')[0]}`)
             
-            // Set bot profile
             if (ownerData.config.autobio) {
                 await this.sock.updateProfileStatus(`🤖 ${CONFIG.botName} v${CONFIG.version} | Aktif`)
             }
@@ -675,6 +652,18 @@ class WhatsAppBot {
             try {
                 if (!message.message) continue
                 if (message.key.fromMe) continue
+                
+                // Handle button responses
+                if (message.message.buttonsResponseMessage) {
+                    await this.handleButtonResponse(message)
+                    continue
+                }
+                
+                // Handle list responses
+                if (message.message.listResponseMessage) {
+                    await this.handleListResponse(message)
+                    continue
+                }
                 
                 const msgType = this.getMessageType(message.message)
                 const content = this.getMessageContent(message.message, msgType)
@@ -750,11 +739,198 @@ class WhatsAppBot {
         }
     }
 
+    async handleButtonResponse(message) {
+        try {
+            const buttonResponse = message.message.buttonsResponseMessage
+            const buttonId = buttonResponse.selectedButtonId
+            const from = message.key.remoteJid
+            const sender = message.key.participant || from
+            
+            console.log(`🔘 Button clicked: ${buttonId} by @${sender.split('@')[0]}`)
+            
+            // Handle logo creator buttons
+            if (buttonId.startsWith('logo_')) {
+                await this.handleLogoButton(buttonId, from, sender)
+            }
+            
+            // Handle pinterest buttons
+            if (buttonId.startsWith('pin_')) {
+                await this.handlePinterestButton(buttonId, from, sender)
+            }
+            
+        } catch (error) {
+            console.error('Error handling button response:', error)
+        }
+    }
+
+    async handleListResponse(message) {
+        try {
+            const listResponse = message.message.listResponseMessage
+            const title = listResponse.title
+            const description = listResponse.description
+            const from = message.key.remoteJid
+            const sender = message.key.participant || from
+            
+            console.log(`📋 List selected: ${title} by @${sender.split('@')[0]}`)
+            
+        } catch (error) {
+            console.error('Error handling list response:', error)
+        }
+    }
+
+    async handleLogoButton(buttonId, from, sender) {
+        try {
+            const parts = buttonId.split('_')
+            const action = parts[1] // sora, photiu, cancel
+            const sessionId = parts[2]
+            
+            // Load logo module
+            const logoModule = require('./plugins/logocreator')
+            const logoSessions = logoModule.getLogoSessions ? logoModule.getLogoSessions() : new Map()
+            
+            if (action === 'cancel') {
+                logoSessions.delete(sender)
+                await this.sock.sendMessage(from, {
+                    text: '❌ *Pembuatan logo dibatalkan*'
+                })
+                return
+            }
+            
+            const session = logoSessions.get(sender)
+            
+            if (!session) {
+                await this.sock.sendMessage(from, {
+                    text: '❌ *SESSION EXPIRED*\n\n' +
+                          'Silakan buat prompt baru dengan .createlogo'
+                })
+                return
+            }
+            
+            const prompt = session.prompt
+            const model = action === 'sora' ? 'Sora AI' : 'Photiu AI'
+            
+            await this.sock.sendMessage(from, {
+                text: `⏳ *Membuat logo menggunakan ${model}...*\n\n` +
+                      `📝 Prompt: ${prompt}\n\n` +
+                      `_Mohon tunggu 1-3 menit..._`
+            })
+            
+            let imageUrl
+            
+            try {
+                if (action === 'sora') {
+                    const api = `https://api.ikyyxd.my.id/ai/text2img?apikey=kyzz&text=${encodeURIComponent(prompt)}`
+                    const { data } = await axios.get(api, { timeout: 0 })
+                    imageUrl = data?.result?.url || data?.result?.image || data?.url
+                } else if (action === 'photiu') {
+                    const api = `https://api.ikyyxd.my.id/ai/photiu?prompt=${encodeURIComponent(prompt)}`
+                    const { data } = await axios.get(api, { timeout: 0 })
+                    imageUrl = data?.result?.image || data?.result?.url || data?.url
+                }
+                
+                if (!imageUrl) {
+                    throw new Error('Image tidak ditemukan')
+                }
+                
+                // Download image
+                await this.sock.sendMessage(from, { text: '📥 Downloading logo...' })
+                
+                const response = await axios({
+                    method: 'GET',
+                    url: imageUrl,
+                    responseType: 'arraybuffer',
+                    timeout: 120000
+                })
+                
+                const imageBuffer = Buffer.from(response.data)
+                
+                // Send logo
+                await this.sock.sendMessage(from, {
+                    image: imageBuffer,
+                    caption: `✅ *Logo berhasil dibuat*\n\n` +
+                            `🎨 Model: ${model}\n` +
+                            `📝 Prompt: ${prompt}\n` +
+                            `🕒 Waktu: ${new Date().toLocaleString('id-ID')}`
+                })
+                
+                // Clear session
+                logoSessions.delete(sender)
+                
+            } catch (error) {
+                console.error('Error generating logo:', error)
+                await this.sock.sendMessage(from, {
+                    text: '❌ *Gagal membuat logo*\n\n' +
+                          'Silakan coba lagi dengan prompt yang berbeda.'
+                })
+            }
+            
+        } catch (error) {
+            console.error('Error in handleLogoButton:', error)
+        }
+    }
+
+    async handlePinterestButton(buttonId, from, sender) {
+        try {
+            const parts = buttonId.split('_')
+            const action = parts[1] // next, stop
+            const key = parts[2]
+            
+            // Load pinterest module
+            const pinterestModule = require('./plugins/pinterest')
+            const pinMemory = pinterestModule.getPinMemory ? pinterestModule.getPinMemory() : new Map()
+            
+            if (action === 'stop') {
+                pinMemory.delete(key)
+                await this.sock.sendMessage(from, {
+                    text: '❌ *Pencarian dihentikan*'
+                })
+                return
+            }
+            
+            if (action === 'next') {
+                const data = pinMemory.get(key)
+                
+                if (!data) {
+                    await this.sock.sendMessage(from, {
+                        text: '❌ *SESSION EXPIRED*\n\nSilakan cari lagi dengan .pin'
+                    })
+                    return
+                }
+                
+                // Check if user is the owner of this session
+                if (data.sender !== sender) {
+                    await this.sock.sendMessage(from, {
+                        text: '❌ Ini bukan sesi pencarian kamu'
+                    })
+                    return
+                }
+                
+                await this.sock.sendMessage(from, {
+                    text: '⏳ *Mengambil halaman berikutnya...*'
+                })
+                
+                // Call sendPinterestPage
+                if (pinterestModule.sendPinterestPage) {
+                    await pinterestModule.sendPinterestPage(
+                        this.sock,
+                        from,
+                        sender,
+                        key,
+                        pinMemory,
+                        CONFIG
+                    )
+                }
+            }
+            
+        } catch (error) {
+            console.error('Error in handlePinterestButton:', error)
+        }
+    }
+
     async handleAfkDetection(from, sender, content, isGroup, pushName) {
         if (!isGroup || !content) return
         
         try {
-            // Check if mentioned user is AFK
             const mentionedJids = content.match(/@(\d+)/g)
             if (mentionedJids) {
                 for (const mention of mentionedJids) {
@@ -777,7 +953,6 @@ class WhatsAppBot {
                 }
             }
             
-            // Check if sender is AFK and now active
             const senderUser = this.db.getUser(sender)
             if (senderUser?.afk?.status) {
                 this.db.updateUser(sender, {
@@ -889,12 +1064,10 @@ class WhatsAppBot {
 
     async executeCommand(command, args, context) {
         try {
-            // Log command execution
             const cleanSender = this.db.cleanJid(context.sender)
             const senderNumber = cleanSender.split('@')[0]
             console.log(`⚡ Command: .${command} | User: @${senderNumber} | Args: ${args.join(' ')}`)
             
-            // Execute command
             await caseHandler(command, context, args)
             
         } catch (error) {
@@ -916,7 +1089,6 @@ class WhatsAppBot {
             
             if (!mainOwnerJid) return
             
-            const uptime = this.formatDuration(0)
             const stats = this.db.getDatabaseStats()
             const pluginsInfo = this.pluginManager.getPluginInfo()
             
@@ -961,7 +1133,6 @@ class WhatsAppBot {
                         
                         await this.sock.sendMessage(jid, { text: reminderMessage })
                         
-                        // Update reminder status
                         this.db.updateReminderStatus(reminder.id, 'executed')
                         
                         console.log(`✅ Reminder executed: ${reminder.id} for ${reminder.user}`)
@@ -983,21 +1154,18 @@ class WhatsAppBot {
             if (memoryPercent > 80) {
                 console.warn(`⚠️ High memory usage: ${memoryPercent.toFixed(2)}%`)
                 
-                // Clear database cache
                 this.db.clearCache()
                 
-                // Force garbage collection if available
                 if (global.gc) {
                     global.gc()
                     console.log('♻️ Garbage collection executed')
                 }
             }
             
-            // Log status every 5 minutes
             if (this.messageCount % 500 === 0 && this.messageCount > 0) {
                 console.log(`📊 Status: ${this.messageCount} messages, ${this.commandCount} commands, Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`)
             }
-        }, 60000) // Check every minute
+        }, 60000)
     }
 
     setupGracefulShutdown() {
@@ -1006,17 +1174,14 @@ class WhatsAppBot {
             console.log('     SHUTTING DOWN GRACEFULLY')
             console.log('=================================')
             
-            // Clear intervals
             if (this.reminderInterval) {
                 clearInterval(this.reminderInterval)
             }
             
-            // Save store
             if (this.store) {
                 this.store.writeToFile(path.join(__dirname, 'store.json'))
             }
             
-            // Clear cache
             this.db.clearCache()
             
             console.log('✅ Cleanup complete')
