@@ -20,24 +20,22 @@ const readline = require('readline')
 const NodeCache = require('node-cache')
 const os = require('os')
 const axios = require('axios')
-const caseHandler = require('./case')
-const { PluginManager } = require('./case')
 
 // ==================== CONFIGURATION ====================
 const CONFIG = {
-    sessionName: 'applendii-session',
+    sessionName: 'apple-ndii-session',
     prefix: ['.', '/'],
-    ownerNumber: ['6285800650661'], // GANTI dengan nomor owner
+    ownerNumber: ['6285800650661'],
     botName: 'Apple-NDIIBot',
     version: '1.0.0',
-    maxFileSize: 100 * 1024 * 1024, // 100MB
+    maxFileSize: 100 * 1024 * 1024,
     autoRead: true,
     autoTyping: false,
     autoRecording: false,
     autoOnline: true,
     autoReplyUnknown: true,
-    reminderCheckInterval: 10000, // 10 detik
-    reconnectDelay: 5000, // 5 detik
+    reminderCheckInterval: 10000,
+    reconnectDelay: 5000,
     maxReconnectAttempts: 10,
 }
 
@@ -45,7 +43,7 @@ const CONFIG = {
 class DatabaseManager {
     constructor() {
         this.dbPath = path.join(__dirname, 'db')
-        this.cache = new NodeCache({ stdTTL: 300 }) // Cache 5 menit
+        this.cache = new NodeCache({ stdTTL: 300 })
         this.ensureDatabase()
     }
 
@@ -193,71 +191,13 @@ class DatabaseManager {
         return null
     }
 
-    getUserStats(jid) {
-        const user = this.getUser(jid)
-        if (!user) return null
-        
-        return {
-            jid: user.jid,
-            name: user.name,
-            premium: user.premium,
-            partner: user.partner,
-            limit: user.limit,
-            balance: user.balance,
-            commandUsed: user.commandUsed,
-            totalCommands: user.stats?.totalCommands || 0,
-            firstSeen: user.firstSeen,
-            lastSeen: user.lastSeen
-        }
-    }
-
-    setPremium(jid, status = true) {
+    isOwner(jid) {
+        const ownerData = this.load('owner.json')
         const cleanJid = this.cleanJid(jid)
-        const user = this.getUser(cleanJid)
+        const senderNumber = cleanJid.split('@')[0]
         
-        if (!user) {
-            this.addUserIfNotExists(cleanJid)
-        }
-        
-        return this.updateUser(cleanJid, {
-            premium: status,
-            premiumSince: status ? new Date().toISOString() : null,
-            premiumExpired: !status ? new Date().toISOString() : null
-        })
-    }
-
-    getPremiumUsers() {
-        const users = this.load('users.json')
-        return Object.values(users).filter(user => user.premium === true)
-    }
-
-    setPartner(jid, status = true) {
-        const cleanJid = this.cleanJid(jid)
-        const partners = this.load('partner.json')
-        
-        if (status) {
-            partners[cleanJid] = {
-                jid: cleanJid,
-                status: 'active',
-                startDate: new Date().toISOString(),
-                features: ['premium', 'partner'],
-                metadata: {
-                    updatedAt: new Date().toISOString()
-                }
-            }
-        } else {
-            delete partners[cleanJid]
-        }
-        
-        this.save('partner.json', partners)
-        this.updateUser(cleanJid, { partner: status })
-        
-        return partners[cleanJid] || null
-    }
-
-    getPartners() {
-        const partners = this.load('partner.json')
-        return Object.values(partners).filter(partner => partner.status === 'active')
+        return ownerData.mainOwner.includes(senderNumber) || 
+               ownerData.additionalOwners.includes(senderNumber)
     }
 
     addReminder(reminderData) {
@@ -297,21 +237,7 @@ class DatabaseManager {
             
             if (reminder.repeat && status === 'executed') {
                 const executeAt = new Date(reminder.executeAt)
-                
-                if (reminder.repeatInterval) {
-                    switch(reminder.repeatInterval) {
-                        case 'daily':
-                            executeAt.setDate(executeAt.getDate() + 1)
-                            break
-                        case 'weekly':
-                            executeAt.setDate(executeAt.getDate() + 7)
-                            break
-                        case 'monthly':
-                            executeAt.setMonth(executeAt.getMonth() + 1)
-                            break
-                    }
-                }
-                
+                executeAt.setDate(executeAt.getDate() + 1)
                 reminder.executeAt = executeAt.toISOString()
                 reminder.status = 'pending'
                 reminder.executed_at = null
@@ -321,19 +247,6 @@ class DatabaseManager {
             return reminder
         }
         return null
-    }
-
-    deleteReminder(id) {
-        const reminders = this.load('reminder.json')
-        const filteredReminders = reminders.filter(r => r.id !== id)
-        this.save('reminder.json', filteredReminders)
-        return filteredReminders.length !== reminders.length
-    }
-
-    getUserReminders(jid) {
-        const reminders = this.load('reminder.json')
-        const cleanJid = this.cleanJid(jid)
-        return reminders.filter(r => r.user === cleanJid && r.status === 'pending')
     }
 
     getDatabaseStats() {
@@ -346,7 +259,6 @@ class DatabaseManager {
             totalPartners: Object.keys(partners).length,
             totalReminders: reminders.length,
             totalPremium: Object.values(users).filter(u => u.premium).length,
-            totalSeller: Object.values(users).filter(u => u.seller).length,
             databaseSize: this.getDirectorySize(this.dbPath),
             lastUpdated: new Date().toISOString()
         }
@@ -369,47 +281,84 @@ class DatabaseManager {
         return size
     }
 
-    isOwner(jid) {
-        const ownerData = this.load('owner.json')
-        const cleanJid = this.cleanJid(jid)
-        const senderNumber = cleanJid.split('@')[0]
-        
-        return ownerData.mainOwner.includes(senderNumber) || 
-               ownerData.additionalOwners.includes(senderNumber)
-    }
-
-    addOwner(number) {
-        const ownerData = this.load('owner.json')
-        const cleanNumber = number.replace(/[^0-9]/g, '')
-        
-        if (!ownerData.additionalOwners.includes(cleanNumber)) {
-            ownerData.additionalOwners.push(cleanNumber)
-            this.save('owner.json', ownerData)
-            return true
-        }
-        return false
-    }
-
-    removeOwner(number) {
-        const ownerData = this.load('owner.json')
-        const cleanNumber = number.replace(/[^0-9]/g, '')
-        
-        const index = ownerData.additionalOwners.indexOf(cleanNumber)
-        if (index > -1) {
-            ownerData.additionalOwners.splice(index, 1)
-            this.save('owner.json', ownerData)
-            return true
-        }
-        return false
-    }
-
     clearCache() {
         this.cache.flushAll()
         return true
     }
+}
 
-    getCacheStats() {
-        return this.cache.getStats()
+// ==================== PLUGIN MANAGER ====================
+class PluginManager {
+    constructor() {
+        this.pluginsDir = path.join(__dirname, 'plugins')
+        this.plugins = new Map()
+        this.loadPlugins()
+    }
+
+    loadPlugins() {
+        if (!fs.existsSync(this.pluginsDir)) {
+            fs.mkdirSync(this.pluginsDir, { recursive: true })
+            console.log('📁 Created plugins directory')
+            return
+        }
+
+        const files = fs.readdirSync(this.pluginsDir)
+        
+        files.forEach(file => {
+            if (file.endsWith('.js')) {
+                try {
+                    const pluginPath = path.join(this.pluginsDir, file)
+                    delete require.cache[require.resolve(pluginPath)]
+                    const plugin = require(pluginPath)
+                    
+                    if (plugin && plugin.name && plugin.commands) {
+                        this.plugins.set(plugin.name, plugin)
+                        console.log(`✅ Plugin loaded: ${plugin.name} (${plugin.commands.length} commands)`)
+                    }
+                } catch (error) {
+                    console.error(`❌ Failed to load plugin ${file}:`, error.message)
+                }
+            }
+        })
+    }
+
+    getPluginInfo() {
+        const info = []
+        this.plugins.forEach((plugin, name) => {
+            info.push({
+                name: name,
+                commands: plugin.commands,
+                description: plugin.description || 'No description',
+                version: plugin.version || '1.0.0',
+                author: plugin.author || 'Unknown'
+            })
+        })
+        return info
+    }
+
+    getPluginCommands() {
+        const commands = new Map()
+        this.plugins.forEach((plugin) => {
+            plugin.commands.forEach(cmd => {
+                commands.set(cmd.command, {
+                    handler: cmd.handler,
+                    permission: cmd.permission || 0,
+                    category: cmd.category || plugin.name,
+                    description: cmd.description || 'No description'
+                })
+            })
+        })
+        return commands
+    }
+
+    executePluginCommand(command, context, args) {
+        const pluginCommands = this.getPluginCommands()
+        const cmd = pluginCommands.get(command)
+        
+        if (cmd) {
+            return cmd.handler(context, args)
+        }
+        return null
     }
 }
 
@@ -419,7 +368,6 @@ class WhatsAppBot {
         this.db = new DatabaseManager()
         this.pluginManager = new PluginManager()
         this.sock = null
-        this.pairingCode = null
         this.isConnected = false
         this.startTime = Date.now()
         this.messageCount = 0
@@ -636,10 +584,6 @@ class WhatsAppBot {
             this.db.save('owner.json', ownerData)
             
             console.log(`📱 Bot Number: ${cleanBotJid.split('@')[0]}`)
-            
-            if (ownerData.config.autobio) {
-                await this.sock.updateProfileStatus(`🤖 ${CONFIG.botName} v${CONFIG.version} | Aktif`)
-            }
         } catch (error) {
             console.error('Error updating bot info:', error)
         }
@@ -659,35 +603,17 @@ class WhatsAppBot {
                     continue
                 }
                 
-                // Handle list responses
-                if (message.message.listResponseMessage) {
-                    await this.handleListResponse(message)
-                    continue
-                }
-                
                 const msgType = this.getMessageType(message.message)
                 const content = this.getMessageContent(message.message, msgType)
                 const from = message.key.remoteJid
                 const sender = message.key.participant || from
                 const isGroup = from.endsWith('@g.us')
                 const pushName = message.pushName || 'Unknown'
-                const isBaileys = message.key.id?.startsWith('BAE5')
                 
                 this.messageCount++
                 
-                // Add user to database if not exists
-                const user = this.db.addUserIfNotExists(sender, pushName)
-                
-                // Handle AFK detection
-                await this.handleAfkDetection(from, sender, content, isGroup, pushName)
-                
-                // Auto typing if enabled
-                const ownerData = this.db.load('owner.json')
-                if (ownerData.config.autotyping && content) {
-                    await this.sock.sendPresenceUpdate('composing', from)
-                    await new Promise(resolve => setTimeout(resolve, 2000))
-                    await this.sock.sendPresenceUpdate('paused', from)
-                }
+                // Add user to database
+                this.db.addUserIfNotExists(sender, pushName)
                 
                 // Parse command
                 const prefix = this.detectPrefix(content)
@@ -701,34 +627,50 @@ class WhatsAppBot {
                         const user = this.db.getUser(sender)
                         if (user) {
                             this.db.updateUser(sender, {
-                                commandUsed: (user.commandUsed || 0) + 1,
-                                stats: {
-                                    ...user.stats,
-                                    totalCommands: (user.stats?.totalCommands || 0) + 1,
-                                    totalGroupCommands: isGroup ? (user.stats?.totalGroupCommands || 0) + 1 : user.stats?.totalGroupCommands || 0
-                                }
+                                commandUsed: (user.commandUsed || 0) + 1
                             })
                         }
                         
-                        // Execute command
-                        await this.executeCommand(command.toLowerCase(), args, {
-                            sock: this.sock,
-                            from,
-                            sender,
-                            isGroup,
-                            pushName,
-                            msgType,
-                            content,
-                            message,
-                            db: this.db,
-                            config: CONFIG,
-                            startTime: this.startTime,
-                            isBaileys
-                        })
+                        // Try plugin commands first
+                        const pluginResult = this.pluginManager.executePluginCommand(
+                            command.toLowerCase(), 
+                            {
+                                sock: this.sock,
+                                from,
+                                sender,
+                                isGroup,
+                                pushName,
+                                msgType,
+                                content,
+                                message,
+                                db: this.db,
+                                config: CONFIG,
+                                startTime: this.startTime
+                            }, 
+                            args
+                        )
+                        
+                        // If plugin command not found, try built-in commands
+                        if (pluginResult === null) {
+                            await this.executeBuiltInCommand(command.toLowerCase(), args, {
+                                sock: this.sock,
+                                from,
+                                sender,
+                                isGroup,
+                                pushName,
+                                msgType,
+                                content,
+                                message,
+                                db: this.db,
+                                config: CONFIG,
+                                startTime: this.startTime
+                            })
+                        }
                     }
                 }
                 
                 // Auto read if enabled
+                const ownerData = this.db.load('owner.json')
                 if (ownerData.config.autoread) {
                     await this.sock.readMessages([message.key])
                 }
@@ -763,28 +705,11 @@ class WhatsAppBot {
         }
     }
 
-    async handleListResponse(message) {
-        try {
-            const listResponse = message.message.listResponseMessage
-            const title = listResponse.title
-            const description = listResponse.description
-            const from = message.key.remoteJid
-            const sender = message.key.participant || from
-            
-            console.log(`📋 List selected: ${title} by @${sender.split('@')[0]}`)
-            
-        } catch (error) {
-            console.error('Error handling list response:', error)
-        }
-    }
-
     async handleLogoButton(buttonId, from, sender) {
         try {
             const parts = buttonId.split('_')
-            const action = parts[1] // sora, photiu, cancel
-            const sessionId = parts[2]
+            const action = parts[1]
             
-            // Load logo module
             const logoModule = require('./plugins/logocreator')
             const logoSessions = logoModule.getLogoSessions ? logoModule.getLogoSessions() : new Map()
             
@@ -800,8 +725,7 @@ class WhatsAppBot {
             
             if (!session) {
                 await this.sock.sendMessage(from, {
-                    text: '❌ *SESSION EXPIRED*\n\n' +
-                          'Silakan buat prompt baru dengan .createlogo'
+                    text: '❌ *SESSION EXPIRED*\n\nSilakan buat prompt baru dengan .createlogo'
                 })
                 return
             }
@@ -817,65 +741,54 @@ class WhatsAppBot {
             
             let imageUrl
             
-            try {
-                if (action === 'sora') {
-                    const api = `https://api.ikyyxd.my.id/ai/text2img?apikey=kyzz&text=${encodeURIComponent(prompt)}`
-                    const { data } = await axios.get(api, { timeout: 0 })
-                    imageUrl = data?.result?.url || data?.result?.image || data?.url
-                } else if (action === 'photiu') {
-                    const api = `https://api.ikyyxd.my.id/ai/photiu?prompt=${encodeURIComponent(prompt)}`
-                    const { data } = await axios.get(api, { timeout: 0 })
-                    imageUrl = data?.result?.image || data?.result?.url || data?.url
-                }
-                
-                if (!imageUrl) {
-                    throw new Error('Image tidak ditemukan')
-                }
-                
-                // Download image
-                await this.sock.sendMessage(from, { text: '📥 Downloading logo...' })
-                
-                const response = await axios({
-                    method: 'GET',
-                    url: imageUrl,
-                    responseType: 'arraybuffer',
-                    timeout: 120000
-                })
-                
-                const imageBuffer = Buffer.from(response.data)
-                
-                // Send logo
-                await this.sock.sendMessage(from, {
-                    image: imageBuffer,
-                    caption: `✅ *Logo berhasil dibuat*\n\n` +
-                            `🎨 Model: ${model}\n` +
-                            `📝 Prompt: ${prompt}\n` +
-                            `🕒 Waktu: ${new Date().toLocaleString('id-ID')}`
-                })
-                
-                // Clear session
-                logoSessions.delete(sender)
-                
-            } catch (error) {
-                console.error('Error generating logo:', error)
-                await this.sock.sendMessage(from, {
-                    text: '❌ *Gagal membuat logo*\n\n' +
-                          'Silakan coba lagi dengan prompt yang berbeda.'
-                })
+            if (action === 'sora') {
+                const api = `https://api.ikyyxd.my.id/ai/text2img?apikey=kyzz&text=${encodeURIComponent(prompt)}`
+                const { data } = await axios.get(api, { timeout: 0 })
+                imageUrl = data?.result?.url || data?.result?.image || data?.url
+            } else if (action === 'photiu') {
+                const api = `https://api.ikyyxd.my.id/ai/photiu?prompt=${encodeURIComponent(prompt)}`
+                const { data } = await axios.get(api, { timeout: 0 })
+                imageUrl = data?.result?.image || data?.result?.url || data?.url
             }
             
+            if (!imageUrl) {
+                throw new Error('Image tidak ditemukan')
+            }
+            
+            await this.sock.sendMessage(from, { text: '📥 Downloading logo...' })
+            
+            const response = await axios({
+                method: 'GET',
+                url: imageUrl,
+                responseType: 'arraybuffer',
+                timeout: 120000
+            })
+            
+            const imageBuffer = Buffer.from(response.data)
+            
+            await this.sock.sendMessage(from, {
+                image: imageBuffer,
+                caption: `✅ *Logo berhasil dibuat*\n\n` +
+                        `🎨 Model: ${model}\n` +
+                        `📝 Prompt: ${prompt}`
+            })
+            
+            logoSessions.delete(sender)
+            
         } catch (error) {
-            console.error('Error in handleLogoButton:', error)
+            console.error('Error generating logo:', error)
+            await this.sock.sendMessage(from, {
+                text: '❌ *Gagal membuat logo*\n\nSilakan coba lagi.'
+            })
         }
     }
 
     async handlePinterestButton(buttonId, from, sender) {
         try {
             const parts = buttonId.split('_')
-            const action = parts[1] // next, stop
+            const action = parts[1]
             const key = parts[2]
             
-            // Load pinterest module
             const pinterestModule = require('./plugins/pinterest')
             const pinMemory = pinterestModule.getPinMemory ? pinterestModule.getPinMemory() : new Map()
             
@@ -897,7 +810,6 @@ class WhatsAppBot {
                     return
                 }
                 
-                // Check if user is the owner of this session
                 if (data.sender !== sender) {
                     await this.sock.sendMessage(from, {
                         text: '❌ Ini bukan sesi pencarian kamu'
@@ -909,7 +821,6 @@ class WhatsAppBot {
                     text: '⏳ *Mengambil halaman berikutnya...*'
                 })
                 
-                // Call sendPinterestPage
                 if (pinterestModule.sendPinterestPage) {
                     await pinterestModule.sendPinterestPage(
                         this.sock,
@@ -927,65 +838,14 @@ class WhatsAppBot {
         }
     }
 
-    async handleAfkDetection(from, sender, content, isGroup, pushName) {
-        if (!isGroup || !content) return
-        
-        try {
-            const mentionedJids = content.match(/@(\d+)/g)
-            if (mentionedJids) {
-                for (const mention of mentionedJids) {
-                    const mentionedNumber = mention.replace('@', '')
-                    const mentionedJid = `${mentionedNumber}@s.whatsapp.net`
-                    const mentionedUser = this.db.getUser(mentionedJid)
-                    
-                    if (mentionedUser?.afk?.status) {
-                        const afkTime = mentionedUser.afk.timestamp
-                        const afkDuration = this.formatDuration(new Date(afkTime).getTime())
-                        
-                        await this.sock.sendMessage(from, {
-                            text: `💤 *USER SEDANG AFK*\n\n` +
-                                  `@${mentionedNumber} sedang AFK sejak ${afkDuration} yang lalu\n` +
-                                  `📝 Alasan: ${mentionedUser.afk.reason}\n\n` +
-                                  `_Pesan Anda akan dibalas nanti_`,
-                            mentions: [mentionedJid]
-                        })
-                    }
-                }
-            }
-            
-            const senderUser = this.db.getUser(sender)
-            if (senderUser?.afk?.status) {
-                this.db.updateUser(sender, {
-                    afk: {
-                        status: false,
-                        reason: '',
-                        timestamp: null
-                    }
-                })
-                
-                await this.sock.sendMessage(from, {
-                    text: `✅ @${sender.split('@')[0]} sudah kembali dari AFK`,
-                    mentions: [sender]
-                })
-            }
-        } catch (error) {
-            console.error('Error handling AFK detection:', error)
-        }
-    }
-
     async handleGroupUpdate(update) {
         try {
             const { id, participants, action } = update
             
             if (action === 'add') {
-                const groupMetadata = await this.sock.groupMetadata(id)
-                const groupName = groupMetadata.subject
-                
                 for (const participant of participants) {
                     const welcomeMsg = `👋 *WELCOME*\n\n` +
-                                      `Selamat datang @${participant.split('@')[0]}\n` +
-                                      `di group *${groupName}*\n\n` +
-                                      `Jangan lupa baca deskripsi group ya!`
+                                      `Selamat datang @${participant.split('@')[0]}`
                     
                     await this.sock.sendMessage(id, {
                         text: welcomeMsg,
@@ -1026,20 +886,11 @@ class WhatsAppBot {
         if (message.audioMessage) return 'audio'
         if (message.stickerMessage) return 'sticker'
         if (message.documentMessage) return 'document'
-        if (message.documentWithCaptionMessage) return 'documentWithCaption'
         if (message.contactMessage) return 'contact'
-        if (message.contactsArrayMessage) return 'contactsArray'
         if (message.locationMessage) return 'location'
-        if (message.liveLocationMessage) return 'liveLocation'
-        if (message.buttonsMessage) return 'buttons'
         if (message.buttonsResponseMessage) return 'buttonsResponse'
-        if (message.templateMessage) return 'template'
-        if (message.templateButtonReplyMessage) return 'templateButtonReply'
-        if (message.listMessage) return 'list'
         if (message.listResponseMessage) return 'listResponse'
         if (message.reactionMessage) return 'reaction'
-        if (message.pollCreationMessage) return 'pollCreation'
-        if (message.pollUpdateMessage) return 'pollUpdate'
         return 'unknown'
     }
 
@@ -1055,31 +906,64 @@ class WhatsAppBot {
                 return message.videoMessage.caption || ''
             case 'document':
                 return message.documentMessage.caption || ''
-            case 'documentWithCaption':
-                return message.documentWithCaptionMessage.message?.documentMessage?.caption || ''
             default:
                 return ''
         }
     }
 
-    async executeCommand(command, args, context) {
+    async executeBuiltInCommand(command, args, context) {
         try {
             const cleanSender = this.db.cleanJid(context.sender)
             const senderNumber = cleanSender.split('@')[0]
-            console.log(`⚡ Command: .${command} | User: @${senderNumber} | Args: ${args.join(' ')}`)
+            console.log(`⚡ Command: ${context.config.prefix[0]}${command} | User: @${senderNumber}`)
             
-            await caseHandler(command, context, args)
+            // Built-in commands
+            switch(command) {
+                case 'menu':
+                    await this.sendMenu(context)
+                    break
+                    
+                case 'ping':
+                    await this.sock.sendMessage(context.from, { text: '🏓 Pong!' })
+                    break
+                    
+                case 'owner':
+                    const ownerData = this.db.load('owner.json')
+                    await this.sock.sendMessage(context.from, {
+                        text: `👑 *OWNER*\n\n@${ownerData.mainOwner[0]}`,
+                        mentions: [`${ownerData.mainOwner[0]}@s.whatsapp.net`]
+                    })
+                    break
+                    
+                default:
+                    if (CONFIG.autoReplyUnknown) {
+                        await this.sock.sendMessage(context.from, {
+                            text: `❌ Command tidak ditemukan\nKetik ${CONFIG.prefix[0]}menu`
+                        })
+                    }
+            }
             
         } catch (error) {
             console.error(`Error executing command ${command}:`, error)
-            
-            await this.sock.sendMessage(context.from, {
-                text: `❌ *ERROR*\n\n` +
-                      `Terjadi kesalahan saat menjalankan command: .${command}\n\n` +
-                      `Error: ${error.message}\n\n` +
-                      `Silakan coba lagi atau hubungi owner.`
-            })
         }
+    }
+
+    async sendMenu(context) {
+        const plugins = this.pluginManager.getPluginInfo()
+        let menuText = `🤖 *${CONFIG.botName}*\n\n` +
+                      `⚡ Prefix: ${CONFIG.prefix.join(' ')}\n\n` +
+                      `📦 *Plugins (${plugins.length}):*\n`
+        
+        plugins.forEach(plugin => {
+            menuText += `• ${plugin.name} - ${plugin.commands.length} commands\n`
+        })
+        
+        menuText += `\n📝 *Built-in Commands:*\n` +
+                   `• menu - Tampilkan menu\n` +
+                   `• ping - Cek kecepatan\n` +
+                   `• owner - Info owner`
+        
+        await this.sock.sendMessage(context.from, { text: menuText })
     }
 
     async sendStartupMessage() {
@@ -1092,19 +976,10 @@ class WhatsAppBot {
             const stats = this.db.getDatabaseStats()
             const pluginsInfo = this.pluginManager.getPluginInfo()
             
-            const startupMessage = `╭━━━━━━━━━━━━━━━┈➤\n` +
-                                  `┃🤖 *${CONFIG.botName} CONNECTED*\n` +
-                                  `╰━━━━━━━━━━━━━━━┈➤\n\n` +
+            const startupMessage = `🤖 *${CONFIG.botName} CONNECTED*\n\n` +
                                   `✅ Status: Online\n` +
-                                  `⏰ Waktu: ${new Date().toLocaleString('id-ID')}\n\n` +
-                                  `📊 *Statistics:*\n` +
-                                  `  • Users: ${stats.totalUsers}\n` +
-                                  `  • Premium: ${stats.totalPremium}\n` +
-                                  `  • Partners: ${stats.totalPartners}\n` +
-                                  `  • Plugins: ${pluginsInfo.length}\n` +
-                                  `  • Messages: ${this.messageCount}\n` +
-                                  `  • Commands: ${this.commandCount}\n\n` +
-                                  `🤖 Bot siap digunakan!\n` +
+                                  `📦 Plugins: ${pluginsInfo.length}\n` +
+                                  `👥 Users: ${stats.totalUsers}\n\n` +
                                   `Ketik .menu untuk melihat commands`
             
             await this.sock.sendMessage(mainOwnerJid, { text: startupMessage })
@@ -1126,16 +1001,11 @@ class WhatsAppBot {
                     const jid = this.db.formatJid(reminder.user)
                     
                     if (jid) {
-                        const reminderMessage = `⏰ *REMINDER*\n\n` +
-                                               `${reminder.message}\n\n` +
-                                               `📅 Waktu: ${new Date(reminder.executeAt).toLocaleString('id-ID')}\n` +
-                                               `🆔 ID: ${reminder.id}`
-                        
-                        await this.sock.sendMessage(jid, { text: reminderMessage })
+                        await this.sock.sendMessage(jid, {
+                            text: `⏰ *REMINDER*\n\n${reminder.message}`
+                        })
                         
                         this.db.updateReminderStatus(reminder.id, 'executed')
-                        
-                        console.log(`✅ Reminder executed: ${reminder.id} for ${reminder.user}`)
                     }
                 }
             } catch (error) {
@@ -1149,18 +1019,6 @@ class WhatsAppBot {
         
         setInterval(() => {
             const memoryUsage = process.memoryUsage()
-            const memoryPercent = (memoryUsage.heapUsed / memoryUsage.heapTotal) * 100
-            
-            if (memoryPercent > 80) {
-                console.warn(`⚠️ High memory usage: ${memoryPercent.toFixed(2)}%`)
-                
-                this.db.clearCache()
-                
-                if (global.gc) {
-                    global.gc()
-                    console.log('♻️ Garbage collection executed')
-                }
-            }
             
             if (this.messageCount % 500 === 0 && this.messageCount > 0) {
                 console.log(`📊 Status: ${this.messageCount} messages, ${this.commandCount} commands, Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`)
@@ -1170,9 +1028,7 @@ class WhatsAppBot {
 
     setupGracefulShutdown() {
         process.on('SIGINT', async () => {
-            console.log('\n=================================')
-            console.log('     SHUTTING DOWN GRACEFULLY')
-            console.log('=================================')
+            console.log('\n👋 Shutting down...')
             
             if (this.reminderInterval) {
                 clearInterval(this.reminderInterval)
@@ -1184,8 +1040,6 @@ class WhatsAppBot {
             
             this.db.clearCache()
             
-            console.log('✅ Cleanup complete')
-            console.log('👋 Goodbye!')
             process.exit(0)
         })
 
@@ -1196,20 +1050,6 @@ class WhatsAppBot {
         process.on('uncaughtException', (error) => {
             console.error('❌ Uncaught exception:', error)
         })
-    }
-
-    formatDuration(timestamp) {
-        const now = Date.now()
-        const diff = now - timestamp
-        const seconds = Math.floor(diff / 1000)
-        const minutes = Math.floor(seconds / 60)
-        const hours = Math.floor(minutes / 60)
-        const days = Math.floor(hours / 24)
-        
-        if (days > 0) return `${days} hari ${hours % 24} jam`
-        if (hours > 0) return `${hours} jam ${minutes % 60} menit`
-        if (minutes > 0) return `${minutes} menit ${seconds % 60} detik`
-        return `${seconds} detik`
     }
 }
 
